@@ -1,0 +1,11 @@
+{
+    "cSpell.words": [
+        "Cryptid",
+        "mult",
+        "Recyclomancy",
+        "Retcon"
+    ],
+    "[rust]": {
+        "editor.formatOnSave": true,
+    }
+}
