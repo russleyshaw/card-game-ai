@@ -4,9 +4,10 @@ use std::{
 };
 
 use colored::Colorize;
+use itertools::Itertools;
 use rand::seq::SliceRandom;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CardSuit {
     Spades,
     Hearts,
@@ -70,7 +71,6 @@ pub enum CardSeal {
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CardRank {
-    Ace,
     Two,
     Three,
     Four,
@@ -83,6 +83,7 @@ pub enum CardRank {
     Jack,
     Queen,
     King,
+    Ace,
 }
 
 impl Debug for CardRank {
@@ -222,6 +223,23 @@ impl Card {
 
 impl Debug for Card {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{:?} {:?}]", self.rank, self.suit)
+        let txt = format!("[{:?} {:?}]", self.rank, self.suit);
+        let txt = match self.suit {
+            CardSuit::Spades => txt.black(),
+            CardSuit::Hearts => txt.red(),
+            CardSuit::Diamonds => txt.yellow(),
+            CardSuit::Clubs => txt.green(),
+        };
+        write!(f, "{}", txt)
     }
+}
+
+pub fn debug_cards(cards: &[Card]) -> String {
+    cards
+        .iter()
+        .sorted_by(|a, b| a.suit.cmp(&b.suit))
+        .sorted_by(|a, b| b.rank.cmp(&a.rank))
+        .map(|card| format!("{:?}", card))
+        .collect::<Vec<String>>()
+        .join(", ")
 }

@@ -1,5 +1,5 @@
 {
-  "name": "balatro-ai",
+  "name": "card-game-ai",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -14,7 +14,7 @@
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",
-    "balatro-wasm": "file:./pkg",
+    "card-game-ai-wasm": "file:./pkg",
     "typescript": "^5.7.2",
     "vite": "^6.0.6"
   },

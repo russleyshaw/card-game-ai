@@ -1,1 +1,1 @@
-# balatro-ai
+# card-game-ai

@@ -47,12 +47,14 @@ impl BossBlind {
             return FINISHER_BLINDS.choose(&mut rng).unwrap().clone();
         }
 
-        let available_boss_blinds = BOSS_BLINDS
+        return BOSS_BLINDS
             .iter()
             .filter(|blind| blind.get_min_ante() <= ante)
-            .collect::<Vec<_>>();
-
-        available_boss_blinds.choose(&mut rng).unwrap().clone()
+            .collect::<Vec<_>>()
+            .choose(&mut rng)
+            .unwrap()
+            .clone()
+            .clone();
     }
 
     pub fn get_reward(&self) -> u32 {
@@ -211,7 +213,10 @@ impl Blind {
     pub fn get_min_score(&self, base_score: u32) -> u32 {
         match self {
             Blind::Small => base_score * 1,
-            Blind::Big => base_score * 2,
+            Blind::Big => {
+                let a = base_score as f32 * 1.5;
+                return a.ceil() as u32;
+            }
             Blind::Boss(boss) => boss.get_min_score(base_score),
         }
     }

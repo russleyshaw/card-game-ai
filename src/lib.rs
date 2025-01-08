@@ -1,21 +1,32 @@
-mod blind;
-mod card;
-mod consumable;
-mod joker;
+pub mod ante;
+pub mod blind;
+pub mod booster;
+pub mod card;
+pub mod consumable;
+pub mod hand;
+pub mod joker;
+pub mod stake;
 mod utils;
-mod voucher;
+pub mod voucher;
 
 use std::{
     clone,
     collections::HashMap,
+    fmt::Debug,
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use ante::get_base_score;
 use blind::{Blind, BossBlind};
-use card::{Card, CardEnhancement, CardRank, CardSuit, CARD_RANKS, CARD_SUITS, FACE_CARDS};
+use card::{
+    debug_cards, Card, CardEnhancement, CardRank, CardSuit, CARD_RANKS, CARD_SUITS, FACE_CARDS,
+};
 use consumable::{Consumable, TarotCard};
+use hand::HandType;
+use itertools::Itertools;
 use joker::JokerCard;
 use rand::seq::SliceRandom;
+use stake::GameStake;
 use voucher::Voucher;
 use wasm_bindgen::prelude::*;
 
@@ -27,18 +38,6 @@ extern "C" {
 #[wasm_bindgen]
 pub fn greet() {
     alert("Hello, {{project-name}}!");
-}
-
-#[derive(Clone, Debug)]
-pub enum GameStake {
-    White,
-    Red,
-    Green,
-    Black,
-    Blue,
-    Purple,
-    Orange,
-    Gold,
 }
 
 // https://balatrogame.fandom.com/wiki/Decks
@@ -62,127 +61,15 @@ pub enum GameStartingDeck {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HandType {
-    HighCard,
-    Pair,
-    TwoPair,
-    ThreeOfAKind,
-    Straight,
-    Flush,
-    FullHouse,
-    FourOfAKind,
-    StraightFlush,
-    RoyalFlush,
-
-    // Secret
-    FiveOfAKind,
-    FlushHouse,
-    FlushFive,
+pub enum GamePhase {
+    Playing,
+    Shop,
 }
 
-impl HandType {
-    pub fn from_cards(cards: Vec<&Card>) -> (Self, Vec<&Card>) {
-        if cards.len() == 0 {
-            panic!("No cards");
-        }
-
-        // Collect by suit
-        let mut by_suits: HashMap<CardSuit, Vec<&Card>> = HashMap::new();
-        cards.iter().for_each(|card| {
-            by_suits
-                .entry(card.suit.clone())
-                .or_insert(vec![])
-                .push(card);
-        });
-
-        let mut by_ranks: HashMap<CardRank, Vec<&Card>> = HashMap::new();
-        cards.iter().for_each(|card| {
-            by_ranks
-                .entry(card.rank.clone())
-                .or_insert(vec![])
-                .push(card);
-        });
-
-        // sorted_by_value
-        let mut sorted_by_value = cards.clone();
-        sorted_by_value.sort_by(|a, b| b.rank.cmp(&a.rank));
-
-        // Five of a kind
-        let five_of_a_kind_cards = by_ranks.iter().find(|(_, cards)| cards.len() == 5);
-        if let Some(five_of_a_kind_cards) = five_of_a_kind_cards {
-            return (HandType::FiveOfAKind, five_of_a_kind_cards.1.clone());
-        }
-
-        // Four of a kind
-        let four_of_a_kind_cards = by_ranks.iter().find(|(_, cards)| cards.len() == 4);
-        if let Some(four_of_a_kind_cards) = four_of_a_kind_cards {
-            return (HandType::FourOfAKind, four_of_a_kind_cards.1.clone());
-        }
-
-        // Flush
-        let flush_cards = by_suits.iter().find(|(_, cards)| cards.len() == 5);
-        if let Some(flush_cards) = flush_cards {
-            return (HandType::Flush, flush_cards.1.clone());
-        }
-
-        // Straight
-        let straight_cards_needed = 5;
-        if sorted_by_value.len() >= straight_cards_needed {
-            let mut straight_cards = vec![];
-
-            for i in 0..sorted_by_value.len() {
-                straight_cards = vec![sorted_by_value[i]];
-
-                for j in i + 1..straight_cards_needed {
-                    let prev_card = sorted_by_value[j - 1];
-                    let curr_card = sorted_by_value[j];
-
-                    if curr_card.rank == prev_card.rank.get_straight_prev() {
-                        straight_cards.push(sorted_by_value[j]);
-                    }
-                }
-
-                if straight_cards.len() == straight_cards_needed {
-                    return (HandType::Straight, straight_cards);
-                }
-            }
-        }
-
-        // At least three of a kind; maybe full house
-        let triple_cards = by_ranks.iter().find(|(_, cards)| cards.len() == 3);
-        let first_pair_cards = by_ranks.iter().find(|(_, cards)| cards.len() == 2);
-        if let Some(first_triple_cards) = triple_cards {
-            // Full house
-            if let Some(full_house_pair_cards) = first_pair_cards {
-                let mut full_house_cards = first_triple_cards.1.clone();
-                full_house_cards.extend(full_house_pair_cards.1.clone());
-                return (HandType::FullHouse, full_house_cards);
-            }
-
-            // Three of a kind
-            return (HandType::ThreeOfAKind, first_triple_cards.1.clone());
-        }
-
-        // At least one pair; maybe two pair
-        if let Some(first_pair_cards) = first_pair_cards {
-            let second_pair_cards = by_ranks
-                .iter()
-                .find(|(rank, cards)| cards.len() == 2 && *rank != first_pair_cards.0);
-
-            // Two pair
-            if let Some(second_pair_cards) = second_pair_cards {
-                let mut two_pair_cards = first_pair_cards.1.clone();
-                two_pair_cards.extend(second_pair_cards.1.clone());
-                return (HandType::TwoPair, two_pair_cards);
-            }
-
-            // Pair
-            return (HandType::Pair, first_pair_cards.1.clone());
-        }
-
-        // If nothing else, return high card
-        (Self::HighCard, vec![sorted_by_value.first().unwrap()])
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HandResult {
+    Win,
+    Lose,
 }
 
 #[derive(Clone, Debug)]
@@ -192,94 +79,94 @@ pub struct ChipsAndMult {
 }
 
 #[derive(Clone, Debug)]
-pub struct HandTypeLevel {
-    pub high_card: u8,
-    pub pair: u8,
-    pub two_pair: u8,
-    pub three_of_a_kind: u8,
-    pub straight: u8,
-    pub flush: u8,
-    pub full_house: u8,
-    pub four_of_a_kind: u8,
-    pub straight_flush: u8, // And royal flush
-
-    // Secret
-    pub five_of_a_kind: u8,
-    pub flush_house: u8,
-    pub flush_five: u8,
-}
-
-impl HandTypeLevel {
-    pub fn new() -> Self {
-        Self {
-            high_card: 0,
-            pair: 0,
-            two_pair: 0,
-            three_of_a_kind: 0,
-            straight: 0,
-            flush: 0,
-            full_house: 0,
-            four_of_a_kind: 0,
-            straight_flush: 0,
-
-            // Secret
-            five_of_a_kind: 0,
-            flush_house: 0,
-            flush_five: 0,
-        }
-    }
-
-    pub fn get_value(&self, hand_type: &HandType) -> ChipsAndMult {
-        match hand_type {
-            HandType::HighCard => ChipsAndMult {
-                mult: 1 + (self.high_card * 1) as u32,
-                chips: 5 + (self.high_card * 5) as u32,
-            },
-            HandType::Pair => ChipsAndMult {
-                mult: 2 + (self.pair * 1) as u32,
-                chips: 10 + (self.pair * 15) as u32,
-            },
-            HandType::TwoPair => ChipsAndMult {
-                mult: 2 + (self.two_pair * 1) as u32,
-                chips: 20 + (self.two_pair * 20) as u32,
-            },
-            HandType::ThreeOfAKind => ChipsAndMult {
-                mult: 3 + (self.three_of_a_kind * 2) as u32,
-                chips: 30 + (self.three_of_a_kind * 20) as u32,
-            },
-            HandType::Straight => ChipsAndMult {
-                mult: 4 + (self.straight * 3) as u32,
-                chips: 40 + (self.straight * 30) as u32,
-            },
-            HandType::Flush => ChipsAndMult {
-                mult: 4 + (self.flush * 2) as u32,
-                chips: 35 + (self.flush * 15) as u32,
-            },
-            HandType::FullHouse => ChipsAndMult {
-                mult: 4 + (self.full_house * 2) as u32,
-                chips: 40 + (self.full_house * 25) as u32,
-            },
-            HandType::FourOfAKind => ChipsAndMult {
-                mult: 7 + (self.four_of_a_kind * 3) as u32,
-                chips: 60 + (self.four_of_a_kind * 30) as u32,
-            },
-            HandType::StraightFlush => ChipsAndMult {
-                mult: 8 + (self.straight_flush * 4) as u32,
-                chips: 100 + (self.straight_flush * 40) as u32,
-            },
-            HandType::RoyalFlush => ChipsAndMult {
-                mult: 8 + (self.straight_flush * 4) as u32,
-                chips: 100 + (self.straight_flush * 40) as u32,
-            },
-            _ => ChipsAndMult { mult: 0, chips: 0 },
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct GameOptions {
     pub starting_deck: GameStartingDeck,
     pub stake: GameStake,
+}
+
+pub type PlayerMoney = i32;
+
+enum BoosterPack {
+    Standard,
+    StandardJumbo,
+    StandardMega,
+
+    Arcana,
+    JumboArcana,
+    MegaArcana,
+
+    Celestial,
+    JumboCelestial,
+    MegaCelestial,
+
+    Buffoon,
+    JumboBuffoon,
+    MegaBuffoon,
+
+    Spectral,
+    JumboSpectral,
+    MegaSpectral,
+}
+
+impl BoosterPack {
+    pub fn get_cost(&self) -> u8 {
+        match self {
+            BoosterPack::Standard => 4,
+            BoosterPack::StandardJumbo => 6,
+            BoosterPack::StandardMega => 8,
+
+            BoosterPack::Arcana => 4,
+            BoosterPack::JumboArcana => 6,
+            BoosterPack::MegaArcana => 8,
+
+            BoosterPack::Celestial => 4,
+            BoosterPack::JumboCelestial => 6,
+            BoosterPack::MegaCelestial => 8,
+
+            BoosterPack::Buffoon => 4,
+            BoosterPack::JumboBuffoon => 6,
+            BoosterPack::MegaBuffoon => 8,
+
+            BoosterPack::Spectral => 4,
+            BoosterPack::JumboSpectral => 6,
+            BoosterPack::MegaSpectral => 8,
+        }
+    }
+
+    pub fn get_weight(&self) -> f32 {
+        match self {
+            BoosterPack::Standard => 4.0,
+            BoosterPack::StandardJumbo => 2.0,
+            BoosterPack::StandardMega => 0.5,
+
+            BoosterPack::Arcana => 4.0,
+            BoosterPack::JumboArcana => 2.0,
+            BoosterPack::MegaArcana => 0.5,
+
+            BoosterPack::Celestial => 4.0,
+            BoosterPack::JumboCelestial => 2.0,
+            BoosterPack::MegaCelestial => 0.5,
+
+            BoosterPack::Buffoon => 1.2,
+            BoosterPack::JumboBuffoon => 0.6,
+            BoosterPack::MegaBuffoon => 0.15,
+
+            BoosterPack::Spectral => 0.6,
+            BoosterPack::JumboSpectral => 0.3,
+            BoosterPack::MegaSpectral => 0.07,
+        }
+    }
+}
+
+enum SaleCard {
+    Joker(JokerCard),
+    Consumable(Consumable),
+}
+
+pub struct GameShopState {
+    pub cards: Vec<SaleCard>,
+
+    pub vouchers: Vec<Voucher>,
 }
 
 #[derive(Clone, Debug)]
@@ -294,7 +181,7 @@ pub struct GameState {
     pub interest_cap: u8,
     pub joker_slots: u8,
     pub consumable_slots: u8,
-    pub hand_values: HandTypeLevel,
+    pub hand_levels: HashMap<HandType, u8>,
 
     pub vouchers: Vec<Voucher>,
     pub jokers: Vec<JokerCard>,
@@ -306,6 +193,8 @@ pub struct GameState {
     pub ante: u8,
     pub blind: Blind,
     pub boss_blind: BossBlind,
+
+    pub phase: GamePhase,
 
     // Playing
     pub hands: u8,
@@ -323,116 +212,7 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub fn get_chips_needed(&self) -> u32 {
-        self.blind.get_min_score(self.score)
-    }
-
-    pub fn start_blind(&mut self) {
-        self.hands = self.hands_total;
-        self.discards = self.discards_total;
-        self.score = 0;
-        self.chips = 0;
-        self.mult = 0;
-
-        for _ in 0..self.hand_size {
-            // Get random card from remaining deck
-            let card = self.remaining_deck.choose(&mut rand::thread_rng()).unwrap();
-
-            let card_idx = self
-                .remaining_deck
-                .iter()
-                .position(|c| c.id == card.id)
-                .unwrap();
-
-            let card = self.remaining_deck.remove(card_idx);
-            self.in_hand.push(card);
-        }
-    }
-
-    pub fn advance_blind(&mut self) {
-        self.blind = match self.blind {
-            Blind::Small => Blind::Big,
-            Blind::Big => Blind::Boss(self.boss_blind.clone()),
-            Blind::Boss(_) => {
-                self.ante += 1;
-                self.boss_blind = BossBlind::get_rand(self.ante);
-                Blind::Boss(self.boss_blind.clone())
-            }
-        };
-    }
-
-    pub fn select_card(&mut self, card_id: u32) {
-        let card_idx = self
-            .in_hand
-            .iter()
-            .position(|card| card.id == card_id)
-            .unwrap();
-
-        let card: Card = self.in_hand.remove(card_idx);
-        self.selected_cards.push(card);
-    }
-
-    pub fn deselect_card(&mut self, card_id: u32) {
-        let card_idx = self
-            .selected_cards
-            .iter()
-            .position(|card| card.id == card_id)
-            .unwrap();
-
-        let card: Card = self.selected_cards.remove(card_idx);
-        self.in_hand.push(card);
-    }
-
-    pub fn play_hand(&mut self) -> (HandType, Vec<&Card>) {
-        if self.hands == 0 {
-            panic!("No hands left");
-        }
-
-        let (hand_type, cards) = HandType::from_cards(self.selected_cards.iter().collect());
-
-        let chips_and_mult = self.hand_values.get_value(&hand_type);
-
-        self.chips += chips_and_mult.chips;
-        self.mult += chips_and_mult.mult;
-
-        // Score individual cards
-        for card in cards.iter() {
-            let mut mult = 0;
-            let mut chips = card.rank.get_base_chips();
-            chips += card.extra_chips;
-
-            match card.enhancement {
-                Some(CardEnhancement::Bonus) => chips += 30,
-                Some(CardEnhancement::Mult) => mult += 4,
-                _ => {}
-            }
-
-            self.chips += chips;
-            self.mult += mult;
-        }
-
-        self.hands -= 1;
-
-        self.score += self.chips * self.mult;
-
-        (hand_type, cards)
-    }
-
-    pub fn discard_hand(&mut self) {
-        if self.discards == 0 {
-            println!("No discards left");
-            return;
-        }
-
-        self.discards -= 1;
-        self.selected_cards.iter().for_each(|card| {
-            self.used_cards.push(card.clone());
-        });
-    }
-}
-
-impl GameOptions {
-    pub fn create_initial_state(self) -> GameState {
+    pub fn new(options: GameOptions) -> Self {
         let mut deck = Vec::new();
 
         let mut hands = 4;
@@ -444,7 +224,7 @@ impl GameOptions {
         let mut joker_slots = 5;
         let mut vouchers: Vec<Voucher> = vec![];
         let mut consumables: Vec<Consumable> = vec![];
-        let ante = 0;
+        let ante = 1;
         let mut boss_blind = BossBlind::get_rand(ante);
 
         for suit in CARD_SUITS.iter() {
@@ -453,7 +233,7 @@ impl GameOptions {
             }
         }
 
-        match &self.starting_deck {
+        match &options.starting_deck {
             GameStartingDeck::Red => {
                 discards += 1;
             }
@@ -511,7 +291,6 @@ impl GameOptions {
 
                 for _ in 0..52 {
                     let card = Card::new(CardRank::get_rand(), CardSuit::get_rand());
-
                     deck.push(card);
                 }
             }
@@ -519,14 +298,14 @@ impl GameOptions {
             _ => {}
         }
 
-        GameState {
+        let mut state = GameState {
             hands_total: hands,
             discards_total: discards,
             hands,
             discards,
             money,
             hand_size,
-            hand_values: HandTypeLevel::new(),
+            hand_levels: HashMap::new(),
             interest_cap,
             consumable_slots,
             joker_slots,
@@ -534,12 +313,14 @@ impl GameOptions {
             consumables,
 
             jokers: vec![],
-            stake: self.stake,
-            starting_deck: self.starting_deck,
+            stake: options.stake,
+            starting_deck: options.starting_deck,
             remaining_deck: deck,
             used_cards: vec![],
             in_hand: vec![],
             selected_cards: vec![],
+
+            phase: GamePhase::Playing,
 
             ante: ante,
             blind: Blind::Small,
@@ -550,89 +331,205 @@ impl GameOptions {
             score: 0,
 
             total_tarot_played: 0,
+        };
+
+        state.init_blind();
+        return state;
+    }
+
+    pub fn get_score_needed(&self) -> u32 {
+        let base_chips = get_base_score(self.ante, &self.stake);
+
+        self.blind.get_min_score(base_chips)
+    }
+
+    pub fn print_state(&self) {
+        println!("================================================");
+        println!(
+            "Hands: {}/{} | Discards: {}/{} | Score: {} | Money: {}",
+            self.hands,
+            self.hands_total,
+            self.discards,
+            self.discards_total,
+            self.score,
+            self.money
+        );
+
+        println!(
+            "Ante: {} | Blind: {:?} | Boss blind: {:?}",
+            self.ante, self.blind, self.boss_blind
+        );
+
+        println!("Phase: {:?}", self.phase);
+
+        println!("Selected cards: {}", debug_cards(&self.selected_cards));
+        println!("In hand: {}", debug_cards(&self.in_hand));
+        println!("Used cards: {}", debug_cards(&self.used_cards));
+
+        println!("===============================================\n");
+    }
+
+    fn init_blind(&mut self) {
+        self.hands = self.hands_total;
+        self.discards = self.discards_total;
+        self.score = 0;
+        self.chips = 0;
+        self.mult = 0;
+
+        // Put all cards back into deck
+        for card in self.used_cards.iter() {
+            self.remaining_deck.push(card.clone());
+        }
+        self.used_cards.clear();
+
+        for card in self.in_hand.iter() {
+            self.remaining_deck.push(card.clone());
+        }
+        self.in_hand.clear();
+
+        for card in self.selected_cards.iter() {
+            self.remaining_deck.push(card.clone());
+        }
+        self.selected_cards.clear();
+
+        for _ in 0..self.hand_size {
+            // Get random card from remaining deck
+            let card = self.remaining_deck.choose(&mut rand::thread_rng()).unwrap();
+
+            let card_idx = self
+                .remaining_deck
+                .iter()
+                .position(|c| c.id == card.id)
+                .unwrap();
+
+            let card = self.remaining_deck.remove(card_idx);
+            self.in_hand.push(card);
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use std::vec;
+    pub fn start_blind(&mut self) {
+        assert_eq!(self.phase, GamePhase::Shop);
+        self.phase = GamePhase::Playing;
 
-    use super::*;
-
-    #[test]
-    fn test_hand_type_full_house() {
-        let cards = vec![
-            Card::new(CardRank::Two, CardSuit::Spades),
-            Card::new(CardRank::Two, CardSuit::Hearts),
-            Card::new(CardRank::Two, CardSuit::Clubs),
-            Card::new(CardRank::Ace, CardSuit::Spades),
-            Card::new(CardRank::Ace, CardSuit::Hearts),
-        ];
-        let (hand_type, cards) = HandType::from_cards(cards.iter().collect());
-        assert_eq!(hand_type, HandType::FullHouse);
-    }
-    #[test]
-    fn test_hand_type_flush() {
-        let suit = CardSuit::get_rand();
-        let cards = vec![
-            Card::new(CardRank::Two, CardSuit::Diamonds),
-            Card::new(CardRank::Five, CardSuit::Diamonds),
-            Card::new(CardRank::Queen, CardSuit::Diamonds),
-            Card::new(CardRank::Ace, CardSuit::Diamonds),
-            Card::new(CardRank::King, CardSuit::Diamonds),
-        ];
-        let (hand_type, cards) = HandType::from_cards(cards.iter().collect());
-        assert_eq!(hand_type, HandType::Flush);
+        self.init_blind();
     }
 
-    #[test]
-    fn test_hand_type_straight() {
-        let cards = vec![
-            Card::new(CardRank::Two, CardSuit::Spades),
-            Card::new(CardRank::Three, CardSuit::Hearts),
-            Card::new(CardRank::Four, CardSuit::Clubs),
-            Card::new(CardRank::Five, CardSuit::Diamonds),
-            Card::new(CardRank::Six, CardSuit::Spades),
-        ];
-        let (hand_type, cards) = HandType::from_cards(cards.iter().collect());
-        assert_eq!(hand_type, HandType::Straight);
+    fn advance_blind(&mut self) {
+        assert_eq!(self.phase, GamePhase::Playing);
+
+        self.blind = match self.blind {
+            Blind::Small => Blind::Big,
+            Blind::Big => Blind::Boss(self.boss_blind.clone()),
+            Blind::Boss(_) => {
+                self.ante += 1;
+                self.boss_blind = BossBlind::get_rand(self.ante);
+                Blind::Boss(self.boss_blind.clone())
+            }
+        };
+
+        self.phase = GamePhase::Shop;
     }
 
-    #[test]
-    fn test_hand_type_three_of_a_kind() {
-        let cards = vec![
-            Card::new(CardRank::Ace, CardSuit::Spades),
-            Card::new(CardRank::Ace, CardSuit::Hearts),
-            Card::new(CardRank::Ace, CardSuit::Clubs),
-        ];
-        let (hand_type, cards) = HandType::from_cards(cards.iter().collect());
-        assert_eq!(hand_type, HandType::ThreeOfAKind);
+    pub fn select_card(&mut self, card_id: u32) {
+        let card_idx = self
+            .in_hand
+            .iter()
+            .position(|card| card.id == card_id)
+            .unwrap();
+
+        let card: Card = self.in_hand.remove(card_idx);
+        self.selected_cards.push(card);
     }
-    #[test]
-    fn test_hand_type_two_pair() {
-        let cards = vec![
-            Card::new(CardRank::Ace, CardSuit::Spades),
-            Card::new(CardRank::Ace, CardSuit::Hearts),
-            Card::new(CardRank::Two, CardSuit::Clubs),
-            Card::new(CardRank::Two, CardSuit::Diamonds),
-        ];
-        let (hand_type, cards) = HandType::from_cards(cards.iter().collect());
-        assert_eq!(hand_type, HandType::TwoPair);
+
+    pub fn deselect_card(&mut self, card_id: u32) {
+        let card_idx = self
+            .selected_cards
+            .iter()
+            .position(|card| card.id == card_id)
+            .unwrap();
+
+        let card: Card = self.selected_cards.remove(card_idx);
+
+        self.in_hand.push(card);
     }
-    #[test]
-    fn test_hand_type_pair() {
-        let cards = vec![
-            Card::new(CardRank::Ace, CardSuit::Spades),
-            Card::new(CardRank::Ace, CardSuit::Hearts),
-        ];
-        let (hand_type, cards) = HandType::from_cards(cards.iter().collect());
-        assert_eq!(hand_type, HandType::Pair);
+
+    pub fn play_hand(&mut self) -> Option<HandResult> {
+        if self.hands == 0 {
+            return Some(HandResult::Lose);
+        }
+
+        let cards = self.selected_cards.iter().collect();
+
+        let (hand_type, cards) = HandType::from_cards(cards);
+
+        let chips_and_mult = hand_type.get_value(&self.hand_levels);
+
+        self.chips += chips_and_mult.0;
+        self.mult += chips_and_mult.1;
+
+        // Score individual cards
+        for card in cards.iter() {
+            let mut mult = 0;
+            let mut chips = card.rank.get_base_chips();
+            chips += card.extra_chips;
+
+            match card.enhancement {
+                Some(CardEnhancement::Bonus) => chips += 30,
+                Some(CardEnhancement::Mult) => mult += 4,
+                _ => {}
+            };
+
+            self.chips += chips;
+            self.mult += mult;
+        }
+
+        self.hands -= 1;
+        self.score += self.chips * self.mult;
+
+        self.chips = 0;
+        self.mult = 0;
+
+        if self.score >= self.get_score_needed() {
+            self.advance_blind();
+            return Some(HandResult::Win);
+        }
+
+        if self.hands == 0 && self.score < self.get_score_needed() {
+            return Some(HandResult::Lose);
+        }
+
+        // Put selected cards into used cards
+        self.use_selected_cards();
+
+        // Redraw cards up to hand size
+        self.fill_in_hand();
+        return None;
     }
-    #[test]
-    fn test_hand_type_high_card() {
-        let cards = vec![Card::new(CardRank::Ace, CardSuit::Spades)];
-        let (hand_type, cards) = HandType::from_cards(cards.iter().collect());
-        assert_eq!(hand_type, HandType::HighCard);
+
+    fn use_selected_cards(&mut self) {
+        for card in self.selected_cards.iter() {
+            self.used_cards.push(card.clone());
+        }
+        self.selected_cards.clear();
+    }
+
+    fn fill_in_hand(&mut self) {
+        let num_to_draw = self.hand_size as usize - self.in_hand.len();
+        for _ in 0..num_to_draw {
+            let card = self.remaining_deck.choose(&mut rand::thread_rng()).unwrap();
+            self.in_hand.push(card.clone());
+        }
+    }
+
+    pub fn discard_hand(&mut self) {
+        assert_ne!(self.discards, 0);
+
+        self.discards -= 1;
+        self.selected_cards.iter().for_each(|card| {
+            self.used_cards.push(card.clone());
+        });
+
+        self.selected_cards.clear();
+        self.fill_in_hand();
     }
 }
